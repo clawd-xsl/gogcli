@@ -97,6 +97,13 @@ func (s *gmailWatchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Skip sending hook if there are no messages (empty push)
+	if len(result.Messages) == 0 {
+		s.logf("watch: skipping hook for %s (no new messages)", result.Account)
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	if err := s.sendHook(r.Context(), result); err != nil {
 		s.warnf("watch: hook failed: %v", err)
 		w.WriteHeader(http.StatusOK)
