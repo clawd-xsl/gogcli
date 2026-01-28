@@ -64,13 +64,16 @@ func (s *gmailWatchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if payload.EmailAddress != "" && !strings.EqualFold(payload.EmailAddress, s.cfg.Account) {
-		s.warnf("watch: ignoring push for %s", payload.EmailAddress)
-		w.WriteHeader(http.StatusAccepted)
-		return
+	// Multi-account: determine which account to use
+	account := s.cfg.Account
+	if payload.EmailAddress != "" {
+		account = payload.EmailAddress
+		if !strings.EqualFold(payload.EmailAddress, s.cfg.Account) {
+			s.logf("watch: processing push for %s", payload.EmailAddress)
+		}
 	}
 
-	result, err := s.handlePush(r.Context(), payload)
+	result, err := s.handlePushForAccount(r.Context(), payload, account)
 	if err != nil {
 		if errors.Is(err, errNoNewMessages) {
 			w.WriteHeader(http.StatusAccepted)
@@ -148,7 +151,16 @@ func (s *gmailWatchServer) oidcAudience(r *http.Request) string {
 }
 
 func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayload) (*gmailHookPayload, error) {
-	store := s.store
+	return s.handlePushForAccount(ctx, payload, s.cfg.Account)
+}
+
+func (s *gmailWatchServer) handlePushForAccount(ctx context.Context, payload gmailPushPayload, account string) (*gmailHookPayload, error) {
+	// Load store for the specific account
+	store, err := loadGmailWatchStore(account)
+	if err != nil {
+		s.warnf("watch: failed to load store for %s, using default: %v", account, err)
+		store = s.store
+	}
 	if payload.MessageID != "" {
 		state := store.Get()
 		if state.LastPushMessageID == payload.MessageID {
@@ -178,7 +190,7 @@ func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayl
 		return nil, err
 	}
 
-	svc, err := s.newService(ctx, s.cfg.Account)
+	svc, err := s.newService(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +202,7 @@ func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayl
 	historyResp, err := historyCall.Context(ctx).Do()
 	if err != nil {
 		if isStaleHistoryError(err) {
-			return s.resyncHistory(ctx, svc, payload.HistoryID, payload.MessageID)
+			return s.resyncHistoryForAccount(ctx, svc, payload.HistoryID, payload.MessageID, account, store)
 		}
 		return nil, err
 	}
@@ -228,7 +240,7 @@ func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayl
 
 	return &gmailHookPayload{
 		Source:            "gmail",
-		Account:           s.cfg.Account,
+		Account:           account,
 		HistoryID:         nextHistoryID,
 		Messages:          msgs,
 		DeletedMessageIDs: historyIDs.DeletedIDs,
@@ -236,6 +248,10 @@ func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayl
 }
 
 func (s *gmailWatchServer) resyncHistory(ctx context.Context, svc *gmail.Service, historyID string, messageID string) (*gmailHookPayload, error) {
+	return s.resyncHistoryForAccount(ctx, svc, historyID, messageID, s.cfg.Account, s.store)
+}
+
+func (s *gmailWatchServer) resyncHistoryForAccount(ctx context.Context, svc *gmail.Service, historyID string, messageID string, account string, store *gmailWatchStore) (*gmailHookPayload, error) {
 	list, err := svc.Users.Messages.List("me").MaxResults(s.cfg.ResyncMax).Do()
 	if err != nil {
 		return nil, err
@@ -251,7 +267,7 @@ func (s *gmailWatchServer) resyncHistory(ctx context.Context, svc *gmail.Service
 		return nil, err
 	}
 
-	if err := s.store.Update(func(state *gmailWatchState) error {
+	if err := store.Update(func(state *gmailWatchState) error {
 		return updateStateAfterHistory(state, historyID, messageID)
 	}); err != nil {
 		s.warnf("watch: failed to update state after resync: %v", err)
@@ -266,7 +282,7 @@ func (s *gmailWatchServer) resyncHistory(ctx context.Context, svc *gmail.Service
 
 	return &gmailHookPayload{
 		Source:    "gmail",
-		Account:   s.cfg.Account,
+		Account:   account,
 		HistoryID: historyID,
 		Messages:  msgs,
 	}, nil
