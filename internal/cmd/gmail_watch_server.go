@@ -382,9 +382,9 @@ func (s *gmailWatchServer) isExcludedLabel(labelIDs []string) bool {
 const maxHookPayloadBytes = 50000 // 50KB max payload to avoid gateway rejection
 
 func (s *gmailWatchServer) sendHook(ctx context.Context, payload *gmailHookPayload) error {
-	// Limit number of messages to prevent payload explosion
+	// Limit number of messages to prevent payload explosion (keep newest)
 	if len(payload.Messages) > 3 {
-		payload.Messages = payload.Messages[:3]
+		payload.Messages = payload.Messages[len(payload.Messages)-3:]
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
