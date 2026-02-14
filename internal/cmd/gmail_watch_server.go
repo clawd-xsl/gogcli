@@ -379,7 +379,7 @@ func (s *gmailWatchServer) isExcludedLabel(labelIDs []string) bool {
 	return false
 }
 
-const maxHookPayloadBytes = 50000 // 50KB max payload to avoid gateway rejection
+const maxHookPayloadBytes = 240 * 1024 // 240KB — just under OpenClaw gateway default (256KB)
 
 func (s *gmailWatchServer) sendHook(ctx context.Context, payload *gmailHookPayload) error {
 	// Limit number of messages to prevent payload explosion (keep newest)
