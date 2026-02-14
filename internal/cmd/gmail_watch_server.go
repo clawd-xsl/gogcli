@@ -379,11 +379,42 @@ func (s *gmailWatchServer) isExcludedLabel(labelIDs []string) bool {
 	return false
 }
 
+const maxHookPayloadBytes = 50000 // 50KB max payload to avoid gateway rejection
+
 func (s *gmailWatchServer) sendHook(ctx context.Context, payload *gmailHookPayload) error {
+	// Limit number of messages to prevent payload explosion
+	if len(payload.Messages) > 3 {
+		payload.Messages = payload.Messages[:3]
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+	// If still too large, aggressively truncate message bodies
+	if len(data) > maxHookPayloadBytes {
+		for i := range payload.Messages {
+			if len(payload.Messages[i].Body) > 3000 {
+				payload.Messages[i].Body = payload.Messages[i].Body[:3000] + "\n[truncated by gog]"
+				payload.Messages[i].BodyTruncated = true
+			}
+		}
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+	}
+	// Last resort: drop all bodies
+	if len(data) > maxHookPayloadBytes {
+		for i := range payload.Messages {
+			payload.Messages[i].Body = "[body dropped: payload too large]"
+			payload.Messages[i].BodyTruncated = true
+		}
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+	}
+	s.logf("watch: sending hook payload %d bytes (%d messages)", len(data), len(payload.Messages))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.HookURL, bytes.NewReader(data))
 	if err != nil {
 		return err
