@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
+	gmail "google.golang.org/api/gmail/v1"
 )
 
 type GmailGetCmd struct {
@@ -87,7 +87,7 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			payload["unsubscribe"] = unsubscribe
 		}
 		if format == gmailFormatFull {
-			if body := bestBodyText(msg.Payload); body != "" {
+			if body := fetchFullBodyText(ctx, svc, msg); body != "" {
 				payload["body"] = body
 			}
 		}
@@ -110,7 +110,7 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			u.Err().Println("Empty raw message")
 			return nil
 		}
-		decoded, err := base64.RawURLEncoding.DecodeString(msg.Raw)
+		decoded, err := decodeBase64URLBytes(msg.Raw)
 		if err != nil {
 			return err
 		}
@@ -133,7 +133,7 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			printAttachmentLines(u.Out(), attachments)
 		}
 		if format == gmailFormatFull {
-			body := bestBodyText(msg.Payload)
+			body := fetchFullBodyText(ctx, svc, msg)
 			if body != "" {
 				u.Out().Println("")
 				u.Out().Println(body)
@@ -143,4 +143,36 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	default:
 		return nil
 	}
+}
+
+// fetchFullBodyText tries bestBodyText first (inline data), then falls back
+// to fetching the body via the Attachments API for large messages where Gmail
+// stores body parts externally (Body.Data is empty, Body.AttachmentId is set).
+func fetchFullBodyText(ctx context.Context, svc *gmail.Service, msg *gmail.Message) string {
+	// Fast path: body data is inline.
+	if body := bestBodyText(msg.Payload); body != "" {
+		return body
+	}
+
+	// Slow path: try text/plain first, then text/html, fetching via attachment ID.
+	for _, mime := range []string{"text/plain", "text/html"} {
+		_, attID := findPartBodyOrAttachmentID(msg.Payload, mime)
+		if attID == "" {
+			continue
+		}
+		att, err := svc.Users.Messages.Attachments.Get("me", msg.Id, attID).Context(ctx).Do()
+		if err != nil {
+			continue
+		}
+		if att.Data == "" {
+			continue
+		}
+		decoded, err := decodeBase64URLBytes(att.Data)
+		if err != nil {
+			continue
+		}
+		return string(decoded)
+	}
+
+	return ""
 }

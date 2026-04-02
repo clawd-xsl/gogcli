@@ -412,6 +412,33 @@ func findPartBody(p *gmail.MessagePart, mimeType string) string {
 	return ""
 }
 
+// findPartBodyOrAttachmentID is like findPartBody but also returns the
+// attachment ID when the body data is stored externally by Gmail (large parts).
+// Returns (decodedBody, attachmentID). If body is inline, attachmentID is empty.
+func findPartBodyOrAttachmentID(p *gmail.MessagePart, mimeType string) (string, string) {
+	if p == nil {
+		return "", ""
+	}
+	if mimeTypeMatches(p.MimeType, mimeType) && p.Body != nil {
+		if p.Body.Data != "" {
+			s, err := decodePartBody(p)
+			if err == nil && s != "" {
+				return s, ""
+			}
+		} else if p.Body.AttachmentId != "" {
+			// Body data is stored as a separate attachment; return the ID
+			// so the caller can fetch it via Messages.Attachments.Get.
+			return "", p.Body.AttachmentId
+		}
+	}
+	for _, part := range p.Parts {
+		if body, attID := findPartBodyOrAttachmentID(part, mimeType); body != "" || attID != "" {
+			return body, attID
+		}
+	}
+	return "", ""
+}
+
 func mimeTypeMatches(partType string, want string) bool {
 	return normalizeMimeType(partType) == normalizeMimeType(want)
 }
