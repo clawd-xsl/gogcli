@@ -369,7 +369,7 @@ func bestBodyText(p *gmail.MessagePart) string {
 		return ""
 	}
 	plain := findPartBody(p, "text/plain")
-	if plain != "" {
+	if strings.TrimSpace(plain) != "" {
 		return plain
 	}
 	html := findPartBody(p, "text/html")
