@@ -2,6 +2,7 @@ package gmailcontent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -40,11 +41,33 @@ func BestBodyText(part *gmail.MessagePart) string {
 	}
 
 	plain := FindPartBody(part, "text/plain")
-	if plain != "" {
+	if strings.TrimSpace(plain) != "" {
 		return plain
 	}
 
 	return FindPartBody(part, "text/html")
+}
+
+// AttachmentBodyLoader returns decoded Gmail attachment bytes for a MIME body part.
+type AttachmentBodyLoader func(context.Context, string) ([]byte, error)
+
+// BestBodyTextWithAttachments resolves out-of-line MIME bodies before choosing plain or HTML.
+func BestBodyTextWithAttachments(ctx context.Context, part *gmail.MessagePart, load AttachmentBodyLoader) (string, error) {
+	plain, plainErr := FindPartBodyWithAttachments(ctx, part, "text/plain", load)
+	if strings.TrimSpace(plain) != "" {
+		return plain, nil
+	}
+
+	html, htmlErr := FindPartBodyWithAttachments(ctx, part, "text/html", load)
+	if html != "" {
+		return html, nil
+	}
+
+	if plainErr != nil {
+		return "", plainErr
+	}
+
+	return "", htmlErr
 }
 
 // BestBodyHTML prefers an HTML body and falls back to plain text.
@@ -68,7 +91,7 @@ func BestBodyForDisplay(part *gmail.MessagePart) (string, bool) {
 	}
 
 	plain := FindPartBody(part, "text/plain")
-	if plain != "" {
+	if strings.TrimSpace(plain) != "" {
 		return plain, LooksLikeHTML(plain)
 	}
 
@@ -78,6 +101,25 @@ func BestBodyForDisplay(part *gmail.MessagePart) (string, bool) {
 	}
 
 	return html, true
+}
+
+// BestBodyForDisplayWithAttachments resolves out-of-line MIME bodies and reports HTML content.
+func BestBodyForDisplayWithAttachments(ctx context.Context, part *gmail.MessagePart, load AttachmentBodyLoader) (string, bool, error) {
+	plain, plainErr := FindPartBodyWithAttachments(ctx, part, "text/plain", load)
+	if strings.TrimSpace(plain) != "" {
+		return plain, LooksLikeHTML(plain), nil
+	}
+
+	html, htmlErr := FindPartBodyWithAttachments(ctx, part, "text/html", load)
+	if html != "" {
+		return html, true, nil
+	}
+
+	if plainErr != nil {
+		return "", false, plainErr
+	}
+
+	return "", false, htmlErr
 }
 
 // FindPartBody finds and decodes the first nested part matching mimeType.
@@ -100,6 +142,50 @@ func FindPartBody(part *gmail.MessagePart, mimeType string) string {
 	}
 
 	return ""
+}
+
+// FindPartBodyWithAttachments resolves the first matching inline or attachment-backed MIME part.
+func FindPartBodyWithAttachments(ctx context.Context, part *gmail.MessagePart, mimeType string, load AttachmentBodyLoader) (string, error) {
+	if part == nil {
+		return "", nil
+	}
+
+	if mimeTypeMatches(part.MimeType, mimeType) && part.Body != nil {
+		if part.Body.Data != "" {
+			body, err := decodePartBody(part)
+			if err == nil && body != "" {
+				return body, nil
+			}
+		}
+
+		if strings.TrimSpace(part.Body.AttachmentId) != "" && load != nil {
+			data, err := load(ctx, part.Body.AttachmentId)
+			if err != nil {
+				return "", err
+			}
+
+			return string(decodePartBodyBytes(part, data)), nil
+		}
+	}
+
+	var firstErr error
+
+	for _, child := range part.Parts {
+		body, err := FindPartBodyWithAttachments(ctx, child, mimeType, load)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+
+			continue
+		}
+
+		if body != "" {
+			return body, nil
+		}
+	}
+
+	return "", firstErr
 }
 
 func mimeTypeMatches(partType string, want string) bool {
@@ -169,6 +255,10 @@ func decodePartBody(part *gmail.MessagePart) (string, error) {
 		return "", err
 	}
 
+	return string(decodePartBodyBytes(part, raw)), nil
+}
+
+func decodePartBodyBytes(part *gmail.MessagePart, raw []byte) []byte {
 	decoded := raw
 	if encoding := strings.TrimSpace(headerValue(part, "Content-Transfer-Encoding")); encoding != "" {
 		decoded = DecodeTransferEncoding(decoded, encoding)
@@ -183,7 +273,7 @@ func decodePartBody(part *gmail.MessagePart) (string, error) {
 		decoded = DecodeBodyCharset(decoded, contentType)
 	}
 
-	return string(decoded), nil
+	return decoded
 }
 
 func headerValue(part *gmail.MessagePart, name string) string {

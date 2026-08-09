@@ -83,8 +83,21 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			}
 		}
 		if c.SanitizeContent {
+			sanitized := sanitizedGmailThread(thread, false, c.UseIndexedAttachmentIDs)
+			messageIndex := 0
+			for _, msg := range thread.Messages {
+				if msg == nil {
+					continue
+				}
+				body, isHTML, bodyErr := gmailMessageBodyForDisplay(ctx, svc, msg)
+				if bodyErr != nil {
+					return bodyErr
+				}
+				sanitized.Messages[messageIndex].Body = sanitizeGmailBody(body, isHTML)
+				messageIndex++
+			}
 			return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
-				"thread":     sanitizedGmailThread(thread, true, c.UseIndexedAttachmentIDs),
+				"thread":     sanitized,
 				"downloaded": downloadedFiles,
 			})
 		}
@@ -135,7 +148,10 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		u.Out().Linef("Date: %s", header("Date"))
 		u.Out().Println("")
 
-		body, isHTML := gmailcontent.BestBodyForDisplay(msg.Payload)
+		body, isHTML, err := gmailMessageBodyForDisplay(ctx, svc, msg)
+		if err != nil {
+			return err
+		}
 		if body != "" {
 			cleanBody := body
 			if c.SanitizeContent {

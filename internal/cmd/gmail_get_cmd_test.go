@@ -70,6 +70,52 @@ func TestGmailGetCmd_JSON_Full(t *testing.T) {
 	}
 }
 
+func TestGmailGetCmdJSONFullFetchesAttachmentBackedHTMLBody(t *testing.T) {
+	plainWhitespace := base64.RawURLEncoding.EncodeToString([]byte("\r\n "))
+	htmlBody := "<p>full html body</p>"
+	htmlAttachment := base64.RawURLEncoding.EncodeToString([]byte(htmlBody))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/m1/attachments/body-html"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": htmlAttachment})
+		case strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/m1"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "m1",
+				"threadId": "t1",
+				"labelIds": []string{"INBOX"},
+				"payload": map[string]any{
+					"mimeType": "multipart/alternative",
+					"parts": []map[string]any{
+						{"mimeType": "text/plain", "body": map[string]any{"data": plainWhitespace}},
+						{"mimeType": "text/html", "body": map[string]any{"attachmentId": "body-html"}},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--json", "--account", "a@b.com", "gmail", "get", "m1", "--format", "full"},
+		newGmailServiceFromServer(t, srv),
+	)
+	if result.err != nil {
+		t.Fatalf("execute: %v\nstderr=%q", result.err, result.stderr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v", err)
+	}
+	if parsed["body"] != htmlBody {
+		t.Fatalf("body = %v", parsed["body"])
+	}
+}
+
 func TestGmailGetCmd_JSON_Full_WithAttachments(t *testing.T) {
 	bodyData := base64.RawURLEncoding.EncodeToString([]byte("hello with attachment"))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

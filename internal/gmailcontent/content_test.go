@@ -1,7 +1,9 @@
 package gmailcontent
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
@@ -19,6 +21,68 @@ func TestBestBodyTextPrefersPlain(t *testing.T) {
 	}
 	if got := BestBodyText(p); got != "plain" {
 		t.Fatalf("unexpected: %q", got)
+	}
+}
+
+func TestBestBodyTextFallsBackFromWhitespacePlainToHTML(t *testing.T) {
+	plain := base64.RawURLEncoding.EncodeToString([]byte("\r\n \t"))
+	html := base64.RawURLEncoding.EncodeToString([]byte("<b>html</b>"))
+	part := &gmail.MessagePart{Parts: []*gmail.MessagePart{
+		{MimeType: "text/plain", Body: &gmail.MessagePartBody{Data: plain}},
+		{MimeType: "text/html", Body: &gmail.MessagePartBody{Data: html}},
+	}}
+
+	if got := BestBodyText(part); got != "<b>html</b>" {
+		t.Fatalf("body = %q", got)
+	}
+}
+
+func TestBestBodyTextWithAttachmentsResolvesHTMLBody(t *testing.T) {
+	plain := base64.RawURLEncoding.EncodeToString([]byte("\r\n "))
+	part := &gmail.MessagePart{Parts: []*gmail.MessagePart{
+		{MimeType: "text/plain", Body: &gmail.MessagePartBody{Data: plain}},
+		{
+			MimeType: "text/html; charset=utf-8",
+			Headers:  []*gmail.MessagePartHeader{{Name: "Content-Transfer-Encoding", Value: "base64"}},
+			Body:     &gmail.MessagePartBody{AttachmentId: "body-html"},
+		},
+	}}
+
+	body, err := BestBodyTextWithAttachments(context.Background(), part, func(_ context.Context, id string) ([]byte, error) {
+		if id != "body-html" {
+			t.Fatalf("attachment id = %q", id)
+		}
+
+		return []byte(base64.StdEncoding.EncodeToString([]byte("<p>caf\xc3\xa9</p>"))), nil
+	})
+	if err != nil {
+		t.Fatalf("BestBodyTextWithAttachments: %v", err)
+	}
+
+	if body != "<p>caf\u00e9</p>" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestBestBodyTextWithAttachmentsFallsBackAfterPlainLoadFailure(t *testing.T) {
+	part := &gmail.MessagePart{Parts: []*gmail.MessagePart{
+		{MimeType: "text/plain", Body: &gmail.MessagePartBody{AttachmentId: "plain"}},
+		{MimeType: "text/html", Body: &gmail.MessagePartBody{AttachmentId: "html"}},
+	}}
+
+	body, err := BestBodyTextWithAttachments(context.Background(), part, func(_ context.Context, id string) ([]byte, error) {
+		if id == "plain" {
+			return nil, errors.New("plain unavailable") //nolint:err113 // Test-only failure.
+		}
+
+		return []byte("<p>html</p>"), nil
+	})
+	if err != nil {
+		t.Fatalf("BestBodyTextWithAttachments: %v", err)
+	}
+
+	if body != "<p>html</p>" {
+		t.Fatalf("body = %q", body)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/openclaw/gogcli/internal/gmailcontent"
 	"github.com/openclaw/gogcli/internal/outfmt"
 	"github.com/openclaw/gogcli/internal/ui"
 )
@@ -69,11 +68,22 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return err
 	}
+	var body string
+	var bodyIsHTML bool
+	if format == gmailFormatFull {
+		body, bodyIsHTML, err = gmailMessageBodyForDisplay(ctx, svc, msg)
+		if err != nil {
+			return err
+		}
+	}
 
 	unsubscribe := bestUnsubscribeLink(msg.Payload)
 	if outfmt.IsJSON(ctx) {
 		if c.SanitizeContent {
-			output := sanitizedGmailMessage(msg, format == gmailFormatFull, c.UseIndexedAttachmentIDs)
+			output := sanitizedGmailMessage(msg, false, c.UseIndexedAttachmentIDs)
+			if format == gmailFormatFull {
+				output.Body = sanitizeGmailBody(body, bodyIsHTML)
+			}
 			payload := map[string]any{
 				"message": output,
 				"headers": output.Headers,
@@ -104,7 +114,7 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			payload["unsubscribe"] = unsubscribe
 		}
 		if format == gmailFormatFull {
-			if body := gmailcontent.BestBodyText(msg.Payload); body != "" {
+			if body != "" {
 				payload["body"] = body
 			}
 		}
@@ -163,11 +173,9 @@ func (c *GmailGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			printAttachmentLines(u.Out(), attachments)
 		}
 		if format == gmailFormatFull {
-			body := gmailcontent.BestBodyText(msg.Payload)
 			if body != "" {
 				if c.SanitizeContent {
-					displayBody, isHTML := gmailcontent.BestBodyForDisplay(msg.Payload)
-					body = sanitizeGmailBody(displayBody, isHTML)
+					body = sanitizeGmailBody(body, bodyIsHTML)
 				}
 				u.Out().Println("")
 				u.Out().Println(body)
