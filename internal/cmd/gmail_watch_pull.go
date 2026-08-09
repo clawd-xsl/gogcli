@@ -26,6 +26,7 @@ type GmailWatchPullCmd struct {
 	Local           bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
 	HookURL         string   `name:"hook-url" help:"Webhook URL to forward messages"`
 	HookToken       string   `name:"hook-token" help:"Webhook bearer token"`
+	HookHMACSecret  string   `name:"hook-hmac-secret" help:"HMAC-SHA256 secret for X-Hub-Signature-256" env:"GOG_GMAIL_WATCH_HOOK_HMAC_SECRET"`
 	IncludeBody     bool     `name:"include-body" help:"Include preferred plain/HTML body in hook payload"`
 	MaxBytes        int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
 	HookMaxBytes    int      `name:"hook-max-bytes" help:"Max encoded webhook payload bytes (0 disables the limit)" default:"245760"`
@@ -89,6 +90,7 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 		"hook_max_messages":   c.HookMaxMessages,
 		"hook_url_set":        strings.TrimSpace(c.HookURL) != "",
 		"hook_token_set":      c.HookToken != "",
+		"hook_hmac_set":       c.HookHMACSecret != "",
 		"save_hook":           c.SaveHook,
 	}); dryRunErr != nil {
 		return dryRunErr
@@ -122,6 +124,7 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 		Accounts:           accounts,
 		HookURL:            hook.URL,
 		HookToken:          hook.Token,
+		HookHMACSecret:     c.HookHMACSecret,
 		HookTimeout:        defaultHookRequestTimeoutSec * time.Second,
 		HistoryMax:         defaultHistoryMaxResults,
 		ResyncMax:          defaultHistoryResyncMax,

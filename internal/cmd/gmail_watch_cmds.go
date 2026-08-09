@@ -232,6 +232,7 @@ type GmailWatchServeCmd struct {
 	SharedToken     string   `name:"token" help:"Shared token for x-gog-token or ?token="`
 	HookURL         string   `name:"hook-url" help:"Webhook URL to forward messages"`
 	HookToken       string   `name:"hook-token" help:"Webhook bearer token"`
+	HookHMACSecret  string   `name:"hook-hmac-secret" help:"HMAC-SHA256 secret for X-Hub-Signature-256" env:"GOG_GMAIL_WATCH_HOOK_HMAC_SECRET"`
 	IncludeBody     bool     `name:"include-body" help:"Include preferred plain/HTML body in hook payload"`
 	MaxBytes        int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
 	HookMaxBytes    int      `name:"hook-max-bytes" help:"Max encoded webhook payload bytes (0 disables the limit)" default:"245760"`
@@ -336,6 +337,7 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 				"source":               hookSource,
 				"url_set":              dryRunHook != nil,
 				"token_set":            hookTokenSet,
+				"hmac_set":             c.HookHMACSecret != "",
 				"include_body":         includeBody,
 				"max_bytes":            maxBodyBytes,
 				"save":                 c.SaveHook,
@@ -392,6 +394,7 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 		OIDCAudience:       c.OIDCAudience,
 		SharedToken:        c.SharedToken,
 		HookTimeout:        defaultHookRequestTimeoutSec * time.Second,
+		HookHMACSecret:     c.HookHMACSecret,
 		HistoryMax:         defaultHistoryMaxResults,
 		ResyncMax:          defaultHistoryResyncMax,
 		FetchDelay:         fetchDelay,

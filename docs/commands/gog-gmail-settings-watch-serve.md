@@ -35,6 +35,7 @@ gog gmail (mail,email) settings watch serve [flags]
 | `-h`<br>`--help` | `kong.helpFlag` |  | Show context-sensitive help. |
 | `--history-types` | `[]string` |  | History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded |
 | `--home` | `string` |  | Override gogcli config/data/state/cache root (equivalent to GOG_HOME) |
+| `--hook-hmac-secret` | `string` |  | HMAC-SHA256 secret for X-Hub-Signature-256 |
 | `--hook-max-bytes` | `int` | 245760 | Max encoded webhook payload bytes (0 disables the limit) |
 | `--hook-max-messages` | `int` | 3 | Max newest messages per webhook payload (0 disables the limit) |
 | `--hook-token` | `string` |  | Webhook bearer token |

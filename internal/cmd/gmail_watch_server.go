@@ -154,6 +154,7 @@ func (s *gmailWatchServer) deliverHook(ctx context.Context, payload *gmailHookPa
 	sender := gmailwatch.HookSender{
 		URL:                s.cfg.HookURL,
 		Token:              s.cfg.HookToken,
+		HMACSecret:         s.cfg.HookHMACSecret,
 		Client:             s.hookClient,
 		MaxPayloadBytes:    s.cfg.MaxPayloadBytes,
 		MaxPayloadMessages: s.cfg.MaxPayloadMessages,

@@ -30,6 +30,7 @@ type gmailWatchServeConfig struct {
 	SharedToken        string
 	HookURL            string
 	HookToken          string
+	HookHMACSecret     string
 	IncludeBody        bool
 	MaxBodyBytes       int
 	MaxPayloadBytes    int

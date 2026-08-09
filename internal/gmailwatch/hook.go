@@ -3,6 +3,8 @@ package gmailwatch
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +18,7 @@ type HTTPDoer interface {
 type HookSender struct {
 	URL                string
 	Token              string
+	HMACSecret         string
 	Client             HTTPDoer
 	MaxPayloadBytes    int
 	MaxPayloadMessages int
@@ -55,6 +58,12 @@ func (s *HookSender) Send(ctx context.Context, payload *Payload) DeliveryResult 
 
 	if s.Token != "" {
 		request.Header.Set("Authorization", "Bearer "+s.Token)
+	}
+
+	if s.HMACSecret != "" {
+		signature := hmac.New(sha256.New, []byte(s.HMACSecret))
+		_, _ = signature.Write(data)
+		request.Header.Set("X-Hub-Signature-256", "sha256="+fmt.Sprintf("%x", signature.Sum(nil)))
 	}
 
 	response, err := s.Client.Do(request)

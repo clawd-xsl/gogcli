@@ -89,6 +89,7 @@ gog gmail watch serve \
   [--verify-oidc] [--oidc-email <svc@...>] [--oidc-audience <aud>] \
   [--token <shared>] \
   [--hook-url <url>] [--hook-token <token>] \
+  [--hook-hmac-secret <secret>] \
   [--fetch-delay <sec|duration>] \
   [--include-body] [--max-bytes <n>] [--exclude-labels <id,id,...>] \
   [--allow-account <email>...] \
@@ -98,6 +99,7 @@ gog gmail watch serve \
 gog gmail watch pull \
   --subscription projects/<project>/subscriptions/<subscription> \
   [--hook-url <url>] [--hook-token <token>] \
+  [--hook-hmac-secret <secret>] \
   [--fetch-delay <sec|duration>] \
   [--include-body] [--max-bytes <n>] [--exclude-labels <id,id,...>] \
   [--allow-account <email>...] \
@@ -115,6 +117,10 @@ Notes:
 - `watch stop` calls Gmail stop + clears state.
 - `watch serve` and `watch pull` use stored hook config if `--hook-url` is not
   provided.
+- `watch serve` and `watch pull` can sign the encoded webhook body with
+  HMAC-SHA256 via `--hook-hmac-secret` or
+  `GOG_GMAIL_WATCH_HOOK_HMAC_SECRET`. The signature is sent as
+  `X-Hub-Signature-256: sha256=<hex>`.
 - `watch serve` and `watch pull` accept repeated or comma-separated
   `--allow-account` values. Each account must already have Gmail credentials and
   its own watch state. Notifications for accounts outside this explicit list are

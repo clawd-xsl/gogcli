@@ -2,8 +2,11 @@ package gmailwatch
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,6 +28,39 @@ func TestHookSenderSuccess(t *testing.T) {
 		Client: hookDoer(func(request *http.Request) (*http.Response, error) {
 			if request.Header.Get("Authorization") != "Bearer secret" {
 				t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+
+	result := sender.Send(context.Background(), &Payload{HistoryID: "200"})
+	if result.Err != nil || result.Status != DeliveryStatusOK || !result.Record {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestHookSenderSignsPayload(t *testing.T) {
+	t.Parallel()
+
+	const secret = "signing-secret"
+	sender := &HookSender{
+		URL:        "https://example.com/hook",
+		HMACSecret: secret,
+		Client: hookDoer(func(request *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			signature := hmac.New(sha256.New, []byte(secret))
+			_, _ = signature.Write(body)
+			want := "sha256=" + fmt.Sprintf("%x", signature.Sum(nil))
+
+			if got := request.Header.Get("X-Hub-Signature-256"); got != want {
+				t.Fatalf("signature = %q, want %q", got, want)
 			}
 
 			return &http.Response{
