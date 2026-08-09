@@ -39,6 +39,18 @@ gog gmail watch pull \
   --hook-url http://127.0.0.1:18789/hooks/agent
 ```
 
+To consume notifications for multiple Gmail accounts that share the topic and
+subscription, start a watch for each account, then allow the additional accounts
+on the single consumer:
+
+```
+gog --account primary@example.com gmail watch pull \
+  --subscription projects/<project>/subscriptions/<subscription> \
+  --allow-account other@example.com \
+  --allow-account third@example.com \
+  --hook-url http://127.0.0.1:18789/hooks/agent
+```
+
 For push delivery instead:
 
 1) Create a push subscription targeting your `gog gmail watch serve` endpoint.
@@ -79,6 +91,8 @@ gog gmail watch serve \
   [--hook-url <url>] [--hook-token <token>] \
   [--fetch-delay <sec|duration>] \
   [--include-body] [--max-bytes <n>] [--exclude-labels <id,id,...>] \
+  [--allow-account <email>...] \
+  [--hook-max-bytes <n>] [--hook-max-messages <n>] \
   [--history-types <type>...] [--save-hook]
 
 gog gmail watch pull \
@@ -86,6 +100,8 @@ gog gmail watch pull \
   [--hook-url <url>] [--hook-token <token>] \
   [--fetch-delay <sec|duration>] \
   [--include-body] [--max-bytes <n>] [--exclude-labels <id,id,...>] \
+  [--allow-account <email>...] \
+  [--hook-max-bytes <n>] [--hook-max-messages <n>] \
   [--history-types <type>...] [--save-hook]
 
 gog gmail history --since <historyId> [--max <n>] [--page <token>]
@@ -99,6 +115,10 @@ Notes:
 - `watch stop` calls Gmail stop + clears state.
 - `watch serve` and `watch pull` use stored hook config if `--hook-url` is not
   provided.
+- `watch serve` and `watch pull` accept repeated or comma-separated
+  `--allow-account` values. Each account must already have Gmail credentials and
+  its own watch state. Notifications for accounts outside this explicit list are
+  acknowledged and ignored.
 - `watch pull` needs Google credentials that can consume the Pub/Sub
   subscription.
 - `watch serve` needs an HTTP endpoint reachable by Pub/Sub.
@@ -177,9 +197,16 @@ Schema (v1):
 ## include-body / max-bytes
 
 - Default: headers + snippet only.
-- `--include-body`: include text/plain body (first matching part).
+- `--include-body`: prefer text/plain and fall back to HTML. MIME bodies stored
+  by Gmail through `attachmentId` are fetched through the Attachments API.
 - `--max-bytes`: hard cap on body bytes (default `20000`).
 - If over cap: truncate + set `bodyTruncated=true`.
+- `--hook-max-messages`: keep the newest N messages in each webhook payload
+  (default `3`; `0` disables the count limit).
+- `--hook-max-bytes`: cap the encoded webhook request (default `245760`; `0`
+  disables the byte limit). Oversized bodies are shortened and then dropped as
+  needed. If the remaining metadata cannot fit, delivery fails and Pub/Sub
+  retries rather than sending an oversized request.
 
 ## Auth (push)
 
@@ -212,8 +239,9 @@ configured `--hook-url`.
 - Stale historyId: fall back to `messages.list` (last N) + reset historyId.
 - Watch expired: `watch renew` error; rerun `watch start`.
 - Pull mode treats invalid Pub/Sub messages as poison messages: log and
-  acknowledge them rather than redelivering forever. Wrong-account
-  notifications are also terminal in both modes.
+  acknowledge them rather than redelivering forever. Notifications from
+  accounts outside the configured primary/allow list are also terminal in both
+  modes.
 - Expired or revoked Gmail OAuth credentials are terminal for the current
   notification. Push and pull acknowledge `invalid_grant` failures only after
   durably marking auth recovery as pending, without advancing the stored Gmail

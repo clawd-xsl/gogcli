@@ -20,6 +20,7 @@ gog gmail (mail,email) settings watch pull [flags]
 | --- | --- | --- | --- |
 | `--access-token` | `string` |  | Use provided access token directly (bypasses stored refresh tokens; token expires in ~1h) |
 | `-a`<br>`--account`<br>`--acct` | `string` |  | Account email, alias, or auto for authenticated Google API commands |
+| `--allow-account` | `[]string` |  | Additional account email to consume from the shared Pub/Sub subscription (repeatable, comma-separated) |
 | `--client` | `string` |  | OAuth client name (selects stored credentials + token bucket) |
 | `--color` | `string` | auto | Color output: auto\|always\|never |
 | `--disable-commands` | `string` |  | Comma-separated list of disabled commands; dot paths allowed |
@@ -33,9 +34,11 @@ gog gmail (mail,email) settings watch pull [flags]
 | `-h`<br>`--help` | `kong.helpFlag` |  | Show context-sensitive help. |
 | `--history-types` | `[]string` |  | History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded |
 | `--home` | `string` |  | Override gogcli config/data/state/cache root (equivalent to GOG_HOME) |
+| `--hook-max-bytes` | `int` | 245760 | Max encoded webhook payload bytes (0 disables the limit) |
+| `--hook-max-messages` | `int` | 3 | Max newest messages per webhook payload (0 disables the limit) |
 | `--hook-token` | `string` |  | Webhook bearer token |
 | `--hook-url` | `string` |  | Webhook URL to forward messages |
-| `--include-body` | `bool` |  | Include text/plain body in hook payload |
+| `--include-body` | `bool` |  | Include preferred plain/HTML body in hook payload |
 | `-j`<br>`--json`<br>`--machine` | `bool` | false | Output JSON to stdout (best for scripting) |
 | `--local` | `bool` |  | Use local timezone (default behavior, useful to override --timezone) |
 | `--max-bytes` | `int` | 20000 | Max bytes of body to include |
