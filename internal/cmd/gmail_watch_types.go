@@ -19,28 +19,55 @@ const (
 )
 
 type gmailWatchServeConfig struct {
-	Account       string
-	Bind          string
-	Port          int
-	Path          string
-	VerifyOIDC    bool
-	OIDCEmail     string
-	OIDCAudience  string
-	SharedToken   string
-	HookURL       string
-	HookToken     string
-	IncludeBody   bool
-	MaxBodyBytes  int
-	ExcludeLabels []string
-	HistoryMax    int64
-	ResyncMax     int64
-	FetchDelay    time.Duration
-	HistoryTypes  []string
-	HookTimeout   time.Duration
-	DateLocation  *time.Location
-	PersistHook   bool
-	AllowNoHook   bool
-	VerboseOutput bool
+	Account            string
+	Accounts           []string
+	Bind               string
+	Port               int
+	Path               string
+	VerifyOIDC         bool
+	OIDCEmail          string
+	OIDCAudience       string
+	SharedToken        string
+	HookURL            string
+	HookToken          string
+	IncludeBody        bool
+	MaxBodyBytes       int
+	MaxPayloadBytes    int
+	MaxPayloadMessages int
+	ExcludeLabels      []string
+	HistoryMax         int64
+	ResyncMax          int64
+	FetchDelay         time.Duration
+	HistoryTypes       []string
+	HookTimeout        time.Duration
+	DateLocation       *time.Location
+	PersistHook        bool
+	AllowNoHook        bool
+	VerboseOutput      bool
+}
+
+func configuredWatchAccounts(primary string, additional []string) []string {
+	accounts := make([]string, 0, len(additional)+1)
+	seen := make(map[string]struct{}, len(additional)+1)
+	add := func(account string) {
+		trimmed := strings.TrimSpace(account)
+		key := strings.ToLower(trimmed)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		accounts = append(accounts, trimmed)
+	}
+	add(primary)
+	for _, raw := range additional {
+		for _, account := range strings.Split(raw, ",") {
+			add(account)
+		}
+	}
+	return accounts
 }
 
 var gmailHistoryTypes = []string{

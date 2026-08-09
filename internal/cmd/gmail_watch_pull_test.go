@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,6 +239,145 @@ func TestGmailWatchPullMessage_NacksHookFailureAndPreservesProgress(t *testing.T
 	}
 	if historyID := server.store.Get().HistoryID; historyID != "100" {
 		t.Fatalf("history id = %q", historyID)
+	}
+}
+
+func TestGmailWatchPullMessage_RoutesAllowedAccountStateAndService(t *testing.T) {
+	server, hook, cleanup := newPullProcessorTestServer(t, http.StatusOK)
+	defer cleanup()
+
+	otherStore := newGmailWatchTestStore(t, "other@example.com")
+	if err := otherStore.Update(func(state *gmailWatchState) error {
+		*state = gmailWatchState{Account: "other@example.com", HistoryID: "100"}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+	server.cfg.Accounts = []string{"other@example.com"}
+	server.loadStore = func(context.Context, string) (*gmailWatchStore, error) {
+		return otherStore, nil
+	}
+	if err := server.configureAccounts(context.Background()); err != nil {
+		t.Fatalf("configure accounts: %v", err)
+	}
+
+	var serviceAccount string
+	newService := server.newService
+	server.newService = func(ctx context.Context, account string) (*gmail.Service, error) {
+		serviceAccount = account
+		return newService(ctx, account)
+	}
+	var delivered gmailHookPayload
+	hook.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
+			t.Fatalf("decode hook: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	msg, state := trackedPullMessage("m1", []byte(`{"emailAddress":"other@example.com","historyId":"200"}`))
+	server.handlePullMessage(context.Background(), msg)
+	if !state.acked || state.nacked {
+		t.Fatalf("delivery ack=%v nack=%v", state.acked, state.nacked)
+	}
+	if serviceAccount != "other@example.com" || delivered.Account != "other@example.com" {
+		t.Fatalf("service account = %q, payload = %#v", serviceAccount, delivered)
+	}
+	if otherStore.Get().HistoryID != "200" || server.store.Get().HistoryID != "100" {
+		t.Fatalf("other state = %#v, default state = %#v", otherStore.Get(), server.store.Get())
+	}
+}
+
+func TestGmailWatchProcessSerializesPerAccountTransaction(t *testing.T) {
+	store := newMemoryGmailWatchTestStore(gmailWatchState{Account: "a@b.com", HistoryID: "100"})
+	historyStarted := make(chan struct{})
+	releaseHistory := make(chan struct{})
+	var historyCalls atomic.Int32
+	gmailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/gmail/v1/users/me/history"):
+			if historyCalls.Add(1) == 1 {
+				close(historyStarted)
+			}
+			<-releaseHistory
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"historyId": "200",
+				"history": []map[string]any{{
+					"messagesAdded": []map[string]any{{"message": map[string]any{"id": "m1"}}},
+				}},
+			})
+		case strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/m1"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "m1", "threadId": "t1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gmailServer.Close()
+	service, err := gmail.NewService(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(gmailServer.Client()),
+		option.WithEndpoint(gmailServer.URL+"/"),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	var hookCalls atomic.Int32
+	hookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hookCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hookServer.Close()
+	server := &gmailWatchServer{
+		cfg: gmailWatchServeConfig{
+			Account:      "a@b.com",
+			HookURL:      hookServer.URL,
+			HistoryMax:   100,
+			ResyncMax:    10,
+			MaxBodyBytes: defaultHookMaxBytes,
+		},
+		store:      store,
+		newService: func(context.Context, string) (*gmail.Service, error) { return service, nil },
+		hookClient: hookServer.Client(),
+		logf:       func(string, ...any) {},
+		warnf:      func(string, ...any) {},
+	}
+
+	errs := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, messageID := range []string{"push-1", "push-2"} {
+		messageID := messageID
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, processErr := server.processNotification(context.Background(), gmailwatch.Notification{
+				Account: "a@b.com", HistoryID: "200", MessageID: messageID,
+			})
+			errs <- processErr
+		}()
+		if messageID == "push-1" {
+			<-historyStarted
+		}
+	}
+	time.Sleep(25 * time.Millisecond)
+	if got := historyCalls.Load(); got != 1 {
+		t.Fatalf("concurrent notification escaped account lock: history calls=%d", got)
+	}
+	close(releaseHistory)
+	group.Wait()
+	close(errs)
+	var success, skipped int
+	for processErr := range errs {
+		switch {
+		case processErr == nil:
+			success++
+		case errors.Is(processErr, errNoNewMessages):
+			skipped++
+		default:
+			t.Fatalf("process error: %v", processErr)
+		}
+	}
+	if success != 1 || skipped != 1 || hookCalls.Load() != 1 {
+		t.Fatalf("success=%d skipped=%d hook calls=%d", success, skipped, hookCalls.Load())
 	}
 }
 

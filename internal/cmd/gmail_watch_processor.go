@@ -7,18 +7,22 @@ import (
 )
 
 func (s *gmailWatchServer) watchProcessor() *gmailwatch.Processor {
+	return s.watchProcessorFor(s.cfg.Account, s.store)
+}
+
+func (s *gmailWatchServer) watchProcessorFor(account string, store *gmailWatchStore) *gmailwatch.Processor {
 	processor := &gmailwatch.Processor{
 		Config: gmailwatch.ProcessorConfig{
-			Account:      s.cfg.Account,
+			Account:      account,
 			HistoryMax:   s.cfg.HistoryMax,
 			ResyncMax:    s.cfg.ResyncMax,
 			FetchDelay:   s.cfg.FetchDelay,
 			HistoryTypes: s.cfg.HistoryTypes,
 			Verbose:      s.cfg.VerboseOutput,
 		},
-		Repository: s.store,
+		Repository: store,
 		NewSource: func(ctx context.Context) (gmailwatch.Source, error) {
-			service, err := s.newService(ctx, s.cfg.Account)
+			service, err := s.newService(ctx, account)
 			if err != nil {
 				return nil, err
 			}
@@ -42,13 +46,6 @@ func (s *gmailWatchServer) watchProcessor() *gmailwatch.Processor {
 
 func (s *gmailWatchServer) handlePush(ctx context.Context, payload gmailPushPayload) (*gmailHookPayload, error) {
 	return s.watchProcessor().Handle(ctx, gmailwatch.Notification{
-		HistoryID: payload.HistoryID,
-		MessageID: payload.MessageID,
-	})
-}
-
-func (s *gmailWatchServer) processGmailWatchPayload(ctx context.Context, payload gmailPushPayload) (*gmailWatchProcessedPayload, error) {
-	return s.watchProcessor().Process(ctx, gmailwatch.Notification{
 		HistoryID: payload.HistoryID,
 		MessageID: payload.MessageID,
 	})

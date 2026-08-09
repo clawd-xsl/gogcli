@@ -395,7 +395,7 @@ func TestGmailWatchServer_HandlePush_UpdateError(t *testing.T) {
 	}
 }
 
-func TestGmailWatchServer_HandlePush_UpdateError_InvalidHistoryID(t *testing.T) {
+func TestGmailWatchServer_HandlePush_EmptyHistorySkipsPayload(t *testing.T) {
 	store := newMemoryGmailWatchTestStore(gmailWatchState{HistoryID: "100"})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -429,11 +429,11 @@ func TestGmailWatchServer_HandlePush_UpdateError_InvalidHistoryID(t *testing.T) 
 	}
 
 	got, err := server.handlePush(context.Background(), gmailPushPayload{HistoryID: "bad"})
-	if err != nil {
-		t.Fatalf("handlePush: %v", err)
+	if !errors.Is(err, errNoNewMessages) {
+		t.Fatalf("handlePush error: %v", err)
 	}
-	if got == nil {
-		t.Fatalf("expected payload")
+	if got != nil {
+		t.Fatalf("payload = %#v", got)
 	}
 }
 

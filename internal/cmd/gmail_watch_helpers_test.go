@@ -50,6 +50,24 @@ func newEmptyGmailWatchTestStore() *gmailWatchStore {
 	return gmailwatch.New("", gmailwatch.Options{})
 }
 
+func TestConfiguredWatchAccounts(t *testing.T) {
+	t.Parallel()
+
+	accounts := configuredWatchAccounts("Primary@Example.com", []string{
+		"other@example.com, third@example.com",
+		"primary@example.com",
+	})
+	want := []string{"Primary@Example.com", "other@example.com", "third@example.com"}
+	if len(accounts) != len(want) {
+		t.Fatalf("accounts = %v", accounts)
+	}
+	for i := range want {
+		if accounts[i] != want[i] {
+			t.Fatalf("accounts = %v", accounts)
+		}
+	}
+}
+
 func TestReadGmailWatchStateOptionalMatchesLayoutSelection(t *testing.T) {
 	root := t.TempDir()
 	layout := config.Layout{

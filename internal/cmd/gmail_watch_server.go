@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -31,31 +32,96 @@ type gmailWatchServer struct {
 	store           *gmailWatchStore
 	validator       *idtoken.Validator
 	newService      func(context.Context, string) (*gmail.Service, error)
+	loadStore       func(context.Context, string) (*gmailWatchStore, error)
 	sleep           func(context.Context, time.Duration) error
 	hookClient      *http.Client
 	excludeLabelIDs map[string]struct{}
 	logf            func(string, ...any)
 	warnf           func(string, ...any)
 	now             func() time.Time
+	defaultProcess  sync.Mutex
+	accounts        map[string]*gmailWatchAccountRuntime
+}
+
+type gmailWatchAccountRuntime struct {
+	account string
+	store   *gmailWatchStore
+	process *sync.Mutex
 }
 
 func (s *gmailWatchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler := gmailwatch.HTTPHandler{
 		Config: gmailwatch.HTTPConfig{
-			Path:        s.cfg.Path,
-			Account:     s.cfg.Account,
-			BodyLimit:   defaultPushBodyLimitBytes,
-			HasHook:     s.cfg.HookURL != "",
-			AllowNoHook: s.cfg.AllowNoHook,
+			Path:            s.cfg.Path,
+			Account:         s.cfg.Account,
+			AllowedAccounts: s.cfg.Accounts,
+			BodyLimit:       defaultPushBodyLimitBytes,
+			HasHook:         s.cfg.HookURL != "",
+			AllowNoHook:     s.cfg.AllowNoHook,
 		},
 		Authorize: s.authorize,
-		Process: func(ctx context.Context, notification gmailwatch.Notification) (*gmailwatch.ProcessedPayload, error) {
-			return s.watchProcessor().Process(ctx, notification)
-		},
-		Now:   s.currentTime,
-		Warnf: s.warnf,
+		Process:   s.processNotification,
+		Now:       s.currentTime,
+		Warnf:     s.warnf,
 	}
 	handler.ServeHTTP(w, r)
+}
+
+func (s *gmailWatchServer) configureAccounts(ctx context.Context) error {
+	accounts := configuredWatchAccounts(s.cfg.Account, s.cfg.Accounts)
+	runtimes := make(map[string]*gmailWatchAccountRuntime, len(accounts))
+	for _, account := range accounts {
+		store := s.store
+		if !strings.EqualFold(account, s.cfg.Account) {
+			var err error
+			if s.loadStore != nil {
+				store, err = s.loadStore(ctx, account)
+			} else {
+				store, err = loadGmailWatchStore(ctx, account)
+			}
+			if err != nil {
+				return fmt.Errorf("load Gmail watch state for %s: %w", account, err)
+			}
+		}
+		runtimes[strings.ToLower(account)] = &gmailWatchAccountRuntime{
+			account: account,
+			store:   store,
+			process: &sync.Mutex{},
+		}
+	}
+	s.accounts = runtimes
+	s.cfg.Accounts = accounts
+	return nil
+}
+
+func (s *gmailWatchServer) accountRuntime(account string) (*gmailWatchAccountRuntime, bool) {
+	trimmed := strings.TrimSpace(account)
+	if trimmed == "" {
+		trimmed = s.cfg.Account
+	}
+	if runtime := s.accounts[strings.ToLower(trimmed)]; runtime != nil {
+		return runtime, true
+	}
+	if s.accounts == nil && strings.EqualFold(trimmed, s.cfg.Account) {
+		return &gmailWatchAccountRuntime{
+			account: s.cfg.Account,
+			store:   s.store,
+			process: &s.defaultProcess,
+		}, true
+	}
+	return nil, false
+}
+
+func (s *gmailWatchServer) processNotification(ctx context.Context, notification gmailwatch.Notification) (*gmailwatch.ProcessedPayload, error) {
+	runtime, ok := s.accountRuntime(notification.Account)
+	if !ok {
+		return nil, fmt.Errorf("gmail watch account is not allowed: %s", notification.Account)
+	}
+	// Cursor advancement and hook rollback are one per-account transaction.
+	// Serializing only repository writes can duplicate delivery across overlapping pushes.
+	runtime.process.Lock()
+	defer runtime.process.Unlock()
+	return s.watchProcessorFor(runtime.account, runtime.store).Process(ctx, notification)
 }
 
 func (s *gmailWatchServer) authorize(r *http.Request) bool {
@@ -86,9 +152,11 @@ func (s *gmailWatchServer) sendHook(ctx context.Context, payload *gmailHookPaylo
 
 func (s *gmailWatchServer) deliverHook(ctx context.Context, payload *gmailHookPayload) gmailwatch.DeliveryResult {
 	sender := gmailwatch.HookSender{
-		URL:    s.cfg.HookURL,
-		Token:  s.cfg.HookToken,
-		Client: s.hookClient,
+		URL:                s.cfg.HookURL,
+		Token:              s.cfg.HookToken,
+		Client:             s.hookClient,
+		MaxPayloadBytes:    s.cfg.MaxPayloadBytes,
+		MaxPayloadMessages: s.cfg.MaxPayloadMessages,
 	}
 
 	return sender.Send(ctx, payload)

@@ -15,6 +15,7 @@ var (
 )
 
 type Notification struct {
+	Account   string
 	HistoryID string
 	MessageID string
 }
@@ -217,6 +218,10 @@ func (p *Processor) Handle(ctx context.Context, notification Notification) (*Pay
 			p.logf("watch: skipping hook; all messages excluded")
 		}
 
+		return nil, ErrNoNewMessages
+	}
+
+	if len(batch.Messages) == 0 && len(historyIDs.DeletedIDs) == 0 {
 		return nil, ErrNoNewMessages
 	}
 

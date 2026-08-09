@@ -72,11 +72,12 @@ func (p *PushPayload) UnmarshalJSON(data []byte) error {
 }
 
 type HTTPConfig struct {
-	Path        string
-	Account     string
-	BodyLimit   int64
-	HasHook     bool
-	AllowNoHook bool
+	Path            string
+	Account         string
+	AllowedAccounts []string
+	BodyLimit       int64
+	HasHook         bool
+	AllowNoHook     bool
 }
 
 type HTTPHandler struct {
@@ -123,7 +124,7 @@ func (h *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	if payload.EmailAddress != "" && !strings.EqualFold(payload.EmailAddress, h.Config.Account) {
+	if payload.EmailAddress != "" && !h.Config.allowsAccount(payload.EmailAddress) {
 		h.warnf("watch: ignoring push for %s", payload.EmailAddress)
 		response.WriteHeader(http.StatusAccepted)
 
@@ -138,6 +139,7 @@ func (h *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 
 	processed, err := h.Process(request.Context(), Notification{
+		Account:   payload.EmailAddress,
 		HistoryID: payload.HistoryID,
 		MessageID: payload.MessageID,
 	})
@@ -193,6 +195,20 @@ func (h *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 
 	response.WriteHeader(http.StatusOK)
+}
+
+func (c HTTPConfig) allowsAccount(account string) bool {
+	if strings.EqualFold(strings.TrimSpace(account), strings.TrimSpace(c.Account)) {
+		return true
+	}
+
+	for _, allowed := range c.AllowedAccounts {
+		if strings.EqualFold(strings.TrimSpace(account), strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func ParsePush(request *http.Request, bodyLimit int64) (*PushEnvelope, error) {

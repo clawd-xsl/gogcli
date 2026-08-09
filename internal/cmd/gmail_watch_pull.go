@@ -20,17 +20,20 @@ import (
 )
 
 type GmailWatchPullCmd struct {
-	Subscription  string   `name:"subscription" help:"Pub/Sub pull subscription (projects/.../subscriptions/...)"`
-	FetchDelay    string   `name:"fetch-delay" help:"Delay before fetching Gmail history (seconds or duration)" default:"3s"`
-	Timezone      string   `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: GOG_TIMEZONE, config, then local"`
-	Local         bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
-	HookURL       string   `name:"hook-url" help:"Webhook URL to forward messages"`
-	HookToken     string   `name:"hook-token" help:"Webhook bearer token"`
-	IncludeBody   bool     `name:"include-body" help:"Include text/plain body in hook payload"`
-	MaxBytes      int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
-	HistoryTypes  []string `name:"history-types" help:"History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded"`
-	ExcludeLabels string   `name:"exclude-labels" help:"List of Gmail label IDs to exclude from hook payload (e.g. SPAM,TRASH,Label_123). Set to empty string to disable." default:"SPAM,TRASH"`
-	SaveHook      bool     `name:"save-hook" help:"Persist hook settings to watch state"`
+	Subscription    string   `name:"subscription" help:"Pub/Sub pull subscription (projects/.../subscriptions/...)"`
+	FetchDelay      string   `name:"fetch-delay" help:"Delay before fetching Gmail history (seconds or duration)" default:"3s"`
+	Timezone        string   `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: GOG_TIMEZONE, config, then local"`
+	Local           bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
+	HookURL         string   `name:"hook-url" help:"Webhook URL to forward messages"`
+	HookToken       string   `name:"hook-token" help:"Webhook bearer token"`
+	IncludeBody     bool     `name:"include-body" help:"Include preferred plain/HTML body in hook payload"`
+	MaxBytes        int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
+	HookMaxBytes    int      `name:"hook-max-bytes" help:"Max encoded webhook payload bytes (0 disables the limit)" default:"245760"`
+	HookMaxMessages int      `name:"hook-max-messages" help:"Max newest messages per webhook payload (0 disables the limit)" default:"3"`
+	HistoryTypes    []string `name:"history-types" help:"History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded"`
+	ExcludeLabels   string   `name:"exclude-labels" help:"List of Gmail label IDs to exclude from hook payload (e.g. SPAM,TRASH,Label_123). Set to empty string to disable." default:"SPAM,TRASH"`
+	SaveHook        bool     `name:"save-hook" help:"Persist hook settings to watch state"`
+	AllowAccounts   []string `name:"allow-account" help:"Additional account email to consume from the shared Pub/Sub subscription (repeatable, comma-separated)"`
 }
 
 func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *RootFlags) error {
@@ -43,6 +46,7 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 	if err != nil {
 		return err
 	}
+	accounts := configuredWatchAccounts(account, c.AllowAccounts)
 	subscription := strings.TrimSpace(c.Subscription)
 	if subscription == "" {
 		return usage("--subscription is required")
@@ -66,14 +70,23 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 	if fetchDelay < 0 {
 		return usage("--fetch-delay must be >= 0")
 	}
+	if c.HookMaxBytes < 0 {
+		return usage("--hook-max-bytes must be >= 0")
+	}
+	if c.HookMaxMessages < 0 {
+		return usage("--hook-max-messages must be >= 0")
+	}
 	if dryRunErr := dryRunExit(ctx, flags, "gmail.watch.pull", map[string]any{
 		"account":             account,
+		"accounts":            accounts,
 		"subscription":        subscription,
 		"fetch_delay_seconds": fetchDelay.Seconds(),
 		"history_types":       historyTypes,
 		"exclude_labels":      splitCommaList(c.ExcludeLabels),
 		"include_body":        c.IncludeBody,
 		"max_bytes":           c.MaxBytes,
+		"hook_max_bytes":      c.HookMaxBytes,
+		"hook_max_messages":   c.HookMaxMessages,
 		"hook_url_set":        strings.TrimSpace(c.HookURL) != "",
 		"hook_token_set":      c.HookToken != "",
 		"save_hook":           c.SaveHook,
@@ -105,19 +118,22 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 	}
 
 	cfg := gmailWatchServeConfig{
-		Account:       account,
-		HookURL:       hook.URL,
-		HookToken:     hook.Token,
-		HookTimeout:   defaultHookRequestTimeoutSec * time.Second,
-		HistoryMax:    defaultHistoryMaxResults,
-		ResyncMax:     defaultHistoryResyncMax,
-		FetchDelay:    fetchDelay,
-		HistoryTypes:  historyTypes,
-		IncludeBody:   hook.IncludeBody,
-		MaxBodyBytes:  hook.MaxBytes,
-		DateLocation:  loc,
-		ExcludeLabels: splitCommaList(c.ExcludeLabels),
-		VerboseOutput: flags.Verbose,
+		Account:            account,
+		Accounts:           accounts,
+		HookURL:            hook.URL,
+		HookToken:          hook.Token,
+		HookTimeout:        defaultHookRequestTimeoutSec * time.Second,
+		HistoryMax:         defaultHistoryMaxResults,
+		ResyncMax:          defaultHistoryResyncMax,
+		FetchDelay:         fetchDelay,
+		HistoryTypes:       historyTypes,
+		IncludeBody:        hook.IncludeBody,
+		MaxBodyBytes:       hook.MaxBytes,
+		MaxPayloadBytes:    c.HookMaxBytes,
+		MaxPayloadMessages: c.HookMaxMessages,
+		DateLocation:       loc,
+		ExcludeLabels:      splitCommaList(c.ExcludeLabels),
+		VerboseOutput:      flags.Verbose,
 	}
 	if cfg.MaxBodyBytes <= 0 {
 		cfg.MaxBodyBytes = defaultHookMaxBytes
@@ -155,6 +171,9 @@ func (c *GmailWatchPullCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 		excludeLabelIDs: stringSet(cfg.ExcludeLabels),
 		logf:            u.Err().Linef,
 		warnf:           u.Err().Linef,
+	}
+	if configureErr := processor.configureAccounts(ctx); configureErr != nil {
+		return configureErr
 	}
 	u.Err().Linef("watch: pulling from %s", subscription)
 
@@ -265,13 +284,17 @@ func (s *gmailWatchServer) handlePullMessage(ctx context.Context, msg *gmailPubS
 		msg.Ack()
 		return
 	}
-	if payload.EmailAddress != "" && !strings.EqualFold(payload.EmailAddress, s.cfg.Account) {
+	if _, ok := s.accountRuntime(payload.EmailAddress); !ok {
 		s.warnf("watch: ignoring pull notification for %s", payload.EmailAddress)
 		msg.Ack()
 		return
 	}
 
-	_, err = s.processGmailWatchPayload(ctx, payload)
+	_, err = s.processNotification(ctx, gmailwatch.Notification{
+		Account:   payload.EmailAddress,
+		HistoryID: payload.HistoryID,
+		MessageID: payload.MessageID,
+	})
 	if err == nil || errors.Is(err, errNoNewMessages) {
 		msg.Ack()
 		return
@@ -291,5 +314,3 @@ func (s *gmailWatchServer) handlePullMessage(ctx context.Context, msg *gmailPubS
 	s.warnf("watch: handle pull failed: %v", err)
 	msg.Nack()
 }
-
-type gmailWatchProcessedPayload = gmailwatch.ProcessedPayload

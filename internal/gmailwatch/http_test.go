@@ -42,6 +42,36 @@ func TestHTTPHandlerProcessesPush(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerProcessesAllowedAccount(t *testing.T) {
+	t.Parallel()
+
+	var got Notification
+	handler := &HTTPHandler{
+		Config: HTTPConfig{
+			Path:            "/hook",
+			Account:         "a@example.com",
+			AllowedAccounts: []string{"other@example.com"},
+			BodyLimit:       1024,
+			HasHook:         true,
+		},
+		Process: func(_ context.Context, notification Notification) (*ProcessedPayload, error) {
+			got = notification
+			return &ProcessedPayload{Payload: &Payload{HistoryID: notification.HistoryID}}, nil
+		},
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, pushRequest(t, "other@example.com", "200", "push-1"))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+
+	if got.Account != "other@example.com" || got.HistoryID != "200" || got.MessageID != "push-1" {
+		t.Fatalf("notification = %#v", got)
+	}
+}
+
 func TestHTTPHandlerMapsNoMessagesAndRateLimit(t *testing.T) {
 	t.Parallel()
 

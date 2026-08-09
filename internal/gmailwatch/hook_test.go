@@ -2,6 +2,7 @@ package gmailwatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -68,5 +69,85 @@ func TestHookSenderClassifiesFailures(t *testing.T) {
 	if !errors.As(result.Err, &statusErr) || statusErr.StatusCode != http.StatusBadGateway ||
 		result.Status != DeliveryStatusHTTPError || result.Note != "status 502" || !result.Record {
 		t.Fatalf("HTTP result = %#v", result)
+	}
+}
+
+func TestHookSenderBoundsPayloadAndKeepsNewestMessages(t *testing.T) {
+	t.Parallel()
+
+	payload := &Payload{
+		Messages: []Message{
+			{ID: "m1", Body: strings.Repeat("old", 2000)},
+			{ID: "m2", Body: strings.Repeat("two", 2000)},
+			{ID: "m3", Body: strings.Repeat("three", 2000)},
+			{ID: "m4", Body: strings.Repeat("new", 2000)},
+		},
+	}
+	var encodedSize int
+	var delivered Payload
+	sender := &HookSender{
+		URL:                "https://example.com/hook",
+		MaxPayloadBytes:    1024,
+		MaxPayloadMessages: 3,
+		Client: hookDoer(func(request *http.Request) (*http.Response, error) {
+			data, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+
+			encodedSize = len(data)
+			if err := json.Unmarshal(data, &delivered); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}),
+	}
+
+	result := sender.Send(context.Background(), payload)
+	if result.Err != nil {
+		t.Fatalf("Send: %v", result.Err)
+	}
+
+	if encodedSize > sender.MaxPayloadBytes {
+		t.Fatalf("encoded size = %d", encodedSize)
+	}
+
+	if len(delivered.Messages) != 3 || delivered.Messages[0].ID != "m2" || delivered.Messages[2].ID != "m4" {
+		t.Fatalf("messages = %#v", delivered.Messages)
+	}
+
+	if !delivered.Messages[0].BodyTruncated {
+		t.Fatalf("message was not truncated: %#v", delivered.Messages[0])
+	}
+
+	if len(payload.Messages) != 4 || payload.Messages[0].BodyTruncated {
+		t.Fatalf("input payload mutated: %#v", payload)
+	}
+}
+
+func TestHookSenderRejectsPayloadThatCannotFit(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	sender := &HookSender{
+		URL:             "https://example.com/hook",
+		MaxPayloadBytes: 64,
+		Client: hookDoer(func(*http.Request) (*http.Response, error) {
+			called = true
+			return nil, errors.New("unexpected hook call") //nolint:err113 // Test-only failure.
+		}),
+	}
+	result := sender.Send(context.Background(), &Payload{
+		Messages: []Message{{ID: "m1", Subject: strings.Repeat("x", 256)}},
+	})
+
+	var sizeErr *HookPayloadTooLargeError
+	if !errors.As(result.Err, &sizeErr) || sizeErr.Limit != 64 {
+		t.Fatalf("result = %#v", result)
+	}
+
+	if called {
+		t.Fatal("oversized payload was sent")
 	}
 }

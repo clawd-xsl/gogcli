@@ -220,23 +220,26 @@ func (c *GmailWatchStopCmd) Run(ctx context.Context, flags *RootFlags) error {
 }
 
 type GmailWatchServeCmd struct {
-	Bind          string   `name:"bind" help:"Bind address" default:"127.0.0.1"`
-	Port          int      `name:"port" help:"Listen port" default:"8788"`
-	Path          string   `name:"path" help:"Push handler path" default:"/gmail-pubsub"`
-	FetchDelay    string   `name:"fetch-delay" help:"Delay before fetching Gmail history (seconds or duration)" default:"3s"`
-	Timezone      string   `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: GOG_TIMEZONE, config, then local"`
-	Local         bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
-	VerifyOIDC    bool     `name:"verify-oidc" help:"Verify Pub/Sub OIDC tokens"`
-	OIDCEmail     string   `name:"oidc-email" help:"Expected service account email"`
-	OIDCAudience  string   `name:"oidc-audience" help:"Expected OIDC audience"`
-	SharedToken   string   `name:"token" help:"Shared token for x-gog-token or ?token="`
-	HookURL       string   `name:"hook-url" help:"Webhook URL to forward messages"`
-	HookToken     string   `name:"hook-token" help:"Webhook bearer token"`
-	IncludeBody   bool     `name:"include-body" help:"Include text/plain body in hook payload"`
-	MaxBytes      int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
-	HistoryTypes  []string `name:"history-types" help:"History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded"`
-	ExcludeLabels string   `name:"exclude-labels" help:"List of Gmail label IDs to exclude from hook payload (e.g. SPAM,TRASH,Label_123). Set to empty string to disable." default:"SPAM,TRASH"`
-	SaveHook      bool     `name:"save-hook" help:"Persist hook settings to watch state"`
+	Bind            string   `name:"bind" help:"Bind address" default:"127.0.0.1"`
+	Port            int      `name:"port" help:"Listen port" default:"8788"`
+	Path            string   `name:"path" help:"Push handler path" default:"/gmail-pubsub"`
+	FetchDelay      string   `name:"fetch-delay" help:"Delay before fetching Gmail history (seconds or duration)" default:"3s"`
+	Timezone        string   `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: GOG_TIMEZONE, config, then local"`
+	Local           bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
+	VerifyOIDC      bool     `name:"verify-oidc" help:"Verify Pub/Sub OIDC tokens"`
+	OIDCEmail       string   `name:"oidc-email" help:"Expected service account email"`
+	OIDCAudience    string   `name:"oidc-audience" help:"Expected OIDC audience"`
+	SharedToken     string   `name:"token" help:"Shared token for x-gog-token or ?token="`
+	HookURL         string   `name:"hook-url" help:"Webhook URL to forward messages"`
+	HookToken       string   `name:"hook-token" help:"Webhook bearer token"`
+	IncludeBody     bool     `name:"include-body" help:"Include preferred plain/HTML body in hook payload"`
+	MaxBytes        int      `name:"max-bytes" help:"Max bytes of body to include" default:"20000"`
+	HookMaxBytes    int      `name:"hook-max-bytes" help:"Max encoded webhook payload bytes (0 disables the limit)" default:"245760"`
+	HookMaxMessages int      `name:"hook-max-messages" help:"Max newest messages per webhook payload (0 disables the limit)" default:"3"`
+	HistoryTypes    []string `name:"history-types" help:"History types to include (repeatable, comma-separated: messageAdded,messageDeleted,labelAdded,labelRemoved). Default: messageAdded"`
+	ExcludeLabels   string   `name:"exclude-labels" help:"List of Gmail label IDs to exclude from hook payload (e.g. SPAM,TRASH,Label_123). Set to empty string to disable." default:"SPAM,TRASH"`
+	SaveHook        bool     `name:"save-hook" help:"Persist hook settings to watch state"`
+	AllowAccounts   []string `name:"allow-account" help:"Additional account email to consume from the shared Pub/Sub topic (repeatable, comma-separated)"`
 }
 
 func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags *RootFlags) error {
@@ -245,11 +248,18 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 	if err != nil {
 		return err
 	}
+	accounts := configuredWatchAccounts(account, c.AllowAccounts)
 	if !strings.HasPrefix(c.Path, "/") {
 		return usage("--path must start with '/'")
 	}
 	if c.Port <= 0 {
 		return usage("--port must be > 0")
+	}
+	if c.HookMaxBytes < 0 {
+		return usage("--hook-max-bytes must be >= 0")
+	}
+	if c.HookMaxMessages < 0 {
+		return usage("--hook-max-messages must be >= 0")
 	}
 	if !c.VerifyOIDC && c.SharedToken == "" && !isLoopbackHost(c.Bind) {
 		return usage("--verify-oidc or --token required when binding non-loopback")
@@ -312,9 +322,10 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 			}
 		}
 		return dryRunExit(ctx, flags, "gmail.watch.serve", map[string]any{
-			"account": account,
-			"listen":  net.JoinHostPort(c.Bind, strconv.Itoa(c.Port)),
-			"path":    c.Path,
+			"account":  account,
+			"accounts": accounts,
+			"listen":   net.JoinHostPort(c.Bind, strconv.Itoa(c.Port)),
+			"path":     c.Path,
 			"auth": map[string]any{
 				"verify_oidc":       c.VerifyOIDC,
 				"oidc_email_set":    strings.TrimSpace(c.OIDCEmail) != "",
@@ -322,12 +333,14 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 				"shared_token_set":  c.SharedToken != "",
 			},
 			"hook": map[string]any{
-				"source":       hookSource,
-				"url_set":      dryRunHook != nil,
-				"token_set":    hookTokenSet,
-				"include_body": includeBody,
-				"max_bytes":    maxBodyBytes,
-				"save":         c.SaveHook,
+				"source":               hookSource,
+				"url_set":              dryRunHook != nil,
+				"token_set":            hookTokenSet,
+				"include_body":         includeBody,
+				"max_bytes":            maxBodyBytes,
+				"save":                 c.SaveHook,
+				"max_payload_bytes":    c.HookMaxBytes,
+				"max_payload_messages": c.HookMaxMessages,
 			},
 			"fetch_delay_seconds": fetchDelay.Seconds(),
 			"timezone":            loc.String(),
@@ -369,25 +382,28 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 	}
 
 	cfg := gmailWatchServeConfig{
-		Account:       account,
-		Bind:          c.Bind,
-		Port:          c.Port,
-		Path:          c.Path,
-		VerifyOIDC:    c.VerifyOIDC,
-		OIDCEmail:     c.OIDCEmail,
-		OIDCAudience:  c.OIDCAudience,
-		SharedToken:   c.SharedToken,
-		HookTimeout:   defaultHookRequestTimeoutSec * time.Second,
-		HistoryMax:    defaultHistoryMaxResults,
-		ResyncMax:     defaultHistoryResyncMax,
-		FetchDelay:    fetchDelay,
-		HistoryTypes:  historyTypes,
-		AllowNoHook:   hook == nil,
-		IncludeBody:   c.IncludeBody,
-		MaxBodyBytes:  c.MaxBytes,
-		DateLocation:  loc,
-		ExcludeLabels: splitCommaList(c.ExcludeLabels),
-		VerboseOutput: flags.Verbose,
+		Account:            account,
+		Accounts:           accounts,
+		Bind:               c.Bind,
+		Port:               c.Port,
+		Path:               c.Path,
+		VerifyOIDC:         c.VerifyOIDC,
+		OIDCEmail:          c.OIDCEmail,
+		OIDCAudience:       c.OIDCAudience,
+		SharedToken:        c.SharedToken,
+		HookTimeout:        defaultHookRequestTimeoutSec * time.Second,
+		HistoryMax:         defaultHistoryMaxResults,
+		ResyncMax:          defaultHistoryResyncMax,
+		FetchDelay:         fetchDelay,
+		HistoryTypes:       historyTypes,
+		AllowNoHook:        hook == nil,
+		IncludeBody:        c.IncludeBody,
+		MaxBodyBytes:       c.MaxBytes,
+		MaxPayloadBytes:    c.HookMaxBytes,
+		MaxPayloadMessages: c.HookMaxMessages,
+		DateLocation:       loc,
+		ExcludeLabels:      splitCommaList(c.ExcludeLabels),
+		VerboseOutput:      flags.Verbose,
 	}
 	if hook != nil {
 		cfg.HookURL = hook.URL
@@ -422,6 +438,9 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 		excludeLabelIDs: stringSet(cfg.ExcludeLabels),
 		logf:            u.Err().Linef,
 		warnf:           u.Err().Linef,
+	}
+	if err := server.configureAccounts(ctx); err != nil {
+		return err
 	}
 
 	addr := net.JoinHostPort(c.Bind, strconv.Itoa(c.Port))

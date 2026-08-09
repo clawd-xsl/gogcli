@@ -346,6 +346,47 @@ func TestProcessorSkipsAllExcludedMessages(t *testing.T) {
 	}
 }
 
+func TestProcessorSkipsEmptyFetchedPayloadButKeepsDeletedOnly(t *testing.T) {
+	t.Parallel()
+
+	repository := NewMemory(State{HistoryID: "100"}, Options{})
+	source := &processorSource{
+		history: HistoryPage{
+			HistoryID: "200",
+			Records:   []HistoryRecord{{Added: []string{"missing"}}},
+		},
+		messageBatches: []MessageBatch{{}},
+	}
+	processor := newTestProcessor(repository, source, time.Unix(550, 0))
+
+	if _, err := processor.Handle(context.Background(), Notification{HistoryID: "200"}); !errors.Is(err, ErrNoNewMessages) {
+		t.Fatalf("empty Handle error = %v", err)
+	}
+
+	if repository.Get().HistoryID != "200" {
+		t.Fatalf("state = %#v", repository.Get())
+	}
+
+	repository = NewMemory(State{HistoryID: "200"}, Options{})
+	source = &processorSource{
+		history: HistoryPage{
+			HistoryID: "300",
+			Records:   []HistoryRecord{{Deleted: []string{"m1"}}},
+		},
+		messageBatches: []MessageBatch{{}},
+	}
+	processor = newTestProcessor(repository, source, time.Unix(551, 0))
+
+	payload, err := processor.Handle(context.Background(), Notification{HistoryID: "300"})
+	if err != nil {
+		t.Fatalf("deleted Handle: %v", err)
+	}
+
+	if len(payload.Messages) != 0 || len(payload.DeletedMessageIDs) != 1 || payload.DeletedMessageIDs[0] != "m1" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestProcessorProcessRecordsDelivery(t *testing.T) {
 	t.Parallel()
 
